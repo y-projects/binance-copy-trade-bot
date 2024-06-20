@@ -23,9 +23,7 @@ def main():
     t1.start()
     try:
         updater.start_polling()
-        # logger.info("reaching this code at the start...")
         updater.idle()
-        # logger.info("reaching here...")
         tostop.set()
     except:
         exit(-1)

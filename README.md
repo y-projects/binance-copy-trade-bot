@@ -1,7 +1,7 @@
-# binance-copy-trade-bot (Updated Feb 2024)
+# binance-copy-trade-bot 
 
-> [!IMPORTANT]  
-> The bot is now rebranded to TraderCloneX, and is available as a service so that you do not need to run the server on your own!!! **You could make use our hosted telegram server and make trades directly without worrying about technical details. Please make a registration here: <https://forms.gle/98SpxWP7BgjCbxe47>.** We will provide you with detailed instructions on how to onboard the service soon. Ask any questions in the discussion tab.
+<!-- > [!IMPORTANT]  
+> The bot is now rebranded to TraderCloneX, and is available as a service so that you do not need to run the server on your own!!! **You could make use our hosted telegram server and make trades directly without worrying about technical details. Please make a registration here: <https://forms.gle/98SpxWP7BgjCbxe47>.** We will provide you with detailed instructions on how to onboard the service soon. Ask any questions in the discussion tab. -->
 
 ## Running the bot on your own
 

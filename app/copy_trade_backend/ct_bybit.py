@@ -4,6 +4,8 @@ import logging
 import pandas as pd
 import os
 import signal
+import datetime
+import random
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -27,21 +29,24 @@ class BybitClient:
         self.api_key = api_key
         self.chat_id = chat_id
         self.uname = uname
+        self.spread = random.choice([i + 5 for i in range(7)])  # 5 - 11
+        self.place = random.choice([i - 5 for i in range(6)])  # -5 - 0
+        self.sleep = random.choice([i + 5 for i in range(6)])  # 5 - 10
+        self.max_slippage = 0.01
         self.stepsize = {}
         self.ticksize = {}
         self.safety_ratio = safety_ratio
         self.isReloaded = False
         res = self.client.get_instruments_info(category="linear")
         for symbol in res["result"]["list"]:
-            self.ticksize[symbol["symbol"]] = round(
-                -math.log(float(symbol["priceFilter"]["tickSize"]), 10)
-            )
+            self.ticksize[symbol["symbol"]] = float(symbol["priceFilter"]["tickSize"])
             self.stepsize[symbol["symbol"]] = round(
                 -math.log(float(symbol["lotSizeFilter"]["qtyStep"]), 10)
             )
 
     def get_latest_price(self, symbol):
-        return self.globals.calculated_price[symbol]
+        res = self.client.get_tickers(symbol=symbol, category="linear")
+        return float(res["result"]["list"][0]["lastPrice"])
 
     def get_symbols(self):
         symbolList = []
@@ -49,142 +54,167 @@ class BybitClient:
             symbolList.append(symbol)
         return symbolList
 
-    def query_trade(
-        self,
-        orderId,
-        symbol,
-        positionKey,
-        isOpen,
-        uname,
-        takeProfit,
-        stopLoss,
-        Leverage,
-        positionSide,
-        ref_price,
-        uid,
-        todelete,
-    ):  # ONLY to be run as thread
-        numTries = 0
-        time.sleep(1)
-        result = ""
-        executed_qty = 0
+    def algolimit(
+        self, symbol, qty, side, positionIdx, isClose, ref_price, positionKey, uid
+    ):
+        exec_details = []
         while True:
             try:
-                result = self.client.get_open_orders(
-                    category="linear", symbol=symbol, orderId=orderId
-                )
-                logger.info(f"Result {result} // orderId {orderId} // symbol {symbol}")
-                if result["retMsg"] != "OK":
-                    logger.error("There is an error!")
-                    return
-                result = result["result"]["list"]
-                if len(result) == 0:
-                    logger.info(f"Result is empty for orderId {orderId}.")
-                    time.sleep(1)
-                    continue
-                else:
-                    result = result[0]
-                if result["orderStatus"] == "Filled":
-                    if ref_price != -1:
-                        executed_price = float(result["avgPrice"])
-                        diff = executed_price - ref_price
-                        slippage = diff / ref_price * 100
-                        self.userdb.insert_command(
-                            {
-                                "cmd": "send_message",
-                                "chat_id": self.chat_id,
-                                "message": f"Order ID {orderId} ({positionKey}) fulfilled successfully. The slippage is {slippage:.2f}%.",
-                            }
-                        )
-                    else:
-                        self.userdb.insert_command(
-                            {
-                                "cmd": "send_message",
-                                "chat_id": self.chat_id,
-                                "message": f"Order ID {orderId} ({positionKey}) fulfilled successfully.",
-                            }
-                        )
-                    if todelete:
-                        return
-                    resultqty = round(abs(float(result["cumExecQty"])), 3)
-                    resultqty = -resultqty if positionSide == "SHORT" else resultqty
-                    # ADD TO POSITION
-                    if isOpen:
-                        resultqty = round(abs(float(result["cumExecQty"])), 3)
-                        resultqty = -resultqty if positionSide == "SHORT" else resultqty
-                        self.userdb.update_positions(
-                            self.chat_id, uid, positionKey, resultqty, 1
-                        )
-                    else:
-                        resultqty = round(abs(float(result["cumExecQty"])), 3)
-                        resultqty = -resultqty if positionSide == "SHORT" else resultqty
-                        self.userdb.update_positions(
-                            self.chat_id, uid, positionKey, resultqty, 2
-                        )
-                    return
-                elif result["orderStatus"] in [
-                    "Rejected",
-                    "PendingCancel",
-                    "Cancelled",
-                ]:
+                if isClose:
+                    tosend = f"Trying to execute the following trade:\nSymbol: {symbol}\nSide: {side}\ntype: MARKET\nquantity: {qty}\n"
                     self.userdb.insert_command(
                         {
                             "cmd": "send_message",
+                            "type": "telegram",
                             "chat_id": self.chat_id,
-                            "message": f"Order ID {orderId} ({positionKey}) is cancelled/rejected.",
+                            "message": tosend,
                         }
                     )
-                    return
-                elif result["orderStatus"] == "PartiallyFilled":
-                    updatedQty = float(result["cumExecQty"]) - executed_qty
-                    updatedQty = -updatedQty if positionSide == "SHORT" else updatedQty
-                    if todelete:
-                        continue
-                    if isOpen:
-                        self.userdb.update_positions(
-                            self.chat_id, uid, positionKey, resultqty, 1
+                    res = self.client.place_order(
+                        category="linear",
+                        symbol=symbol,
+                        side=side,
+                        orderType="Market",
+                        qty=str(qty),
+                        positionIdx=positionIdx,
+                        reduceOnly=True,
+                        closeOnTrigger=True,
+                    )
+                else:
+                    cur_price = self.get_latest_price(symbol)
+                    expected_slip = abs(cur_price - ref_price) / ref_price
+                    if expected_slip > self.max_slippage:
+                        self.userdb.insert_command(
+                            {
+                                "cmd": "send_message",
+                                "type": "telegram",
+                                "chat_id": self.chat_id,
+                                "message": f"{positionKey} : Expected Slippage is {expected_slip:.2f}%, trade will not be executed.",
+                            }
                         )
-                    else:
-                        self.userdb.update_positions(
-                            self.chat_id, uid, positionKey, resultqty, 2
+                        raise Exception(
+                            f"Expected Slippage is {expected_slip:.2f}%, trade will not be executed."
                         )
-                    executed_qty = float(result["cumExecQty"])
+                    limit_price = (
+                        cur_price + (self.place * self.ticksize[symbol])
+                        if side == "Buy"
+                        else cur_price - (self.place * self.ticksize[symbol])
+                    )
+                    limit_price = self.round_up(
+                        limit_price, round(-math.log(float(self.ticksize[symbol]), 10))
+                    )
+                    tosend = f"Trying to execute the following trade:\nSymbol: {symbol}\nSide: {side}\ntype: LIMIT\nquantity: {qty}\nprice: {limit_price}"
+                    self.userdb.insert_command(
+                        {
+                            "cmd": "send_message",
+                            "type": "telegram",
+                            "chat_id": self.chat_id,
+                            "message": tosend,
+                        }
+                    )
+                    res = self.client.place_order(
+                        category="linear",
+                        symbol=symbol,
+                        side=side,
+                        orderType="Limit",
+                        qty=str(qty),
+                        price=str(limit_price),
+                        timeInForce="GTC",
+                        positionIdx=positionIdx,
+                        reduceOnly=False,
+                        closeOnTrigger=False,
+                    )
             except Exception as e:
-                logger.error(f"Error in Query trade: {e}")
-                pass
-            if numTries >= 15:
+                logger.info(f"Cannot place order, error: {e}")
+                if "reduce-only" in str(e):
+                    self.userdb.insert_command(
+                        {
+                            "cmd": "send_message",
+                            "type": "telegram",
+                            "chat_id": self.chat_id,
+                            "message": f"{positionKey}: The trade will not be executed because position is zero.",
+                        }
+                    )
+                    self.userdb.update_positions(self.chat_id, uid, positionKey, 0, 0)
+                return
+            orderTime = time.time()
+            if res["retMsg"] == "OK":
+                logger.info(f"{self.uname} Order placed")
+            else:
+                logger.info(f"{self.uname} - Error in {side} {symbol}: {res['retMsg']}")
+                return
+            orderId = res["result"]["orderId"]
+            replace_order = False
+            # Check result and replace
+            while True:
+                time.sleep(0.3)
+                res = self.client.get_open_orders(
+                    category="linear", symbol=symbol, orderId=orderId
+                )
+                if res["retMsg"] != "OK":
+                    print("Error in trade query")
+                    return
+                res = res["result"]["list"][0]
+                if res["orderStatus"] == "Filled":
+                    logger.info(f"{self.uname} Order filled")
+                    if res["avgPrice"] != "" and res["cumExecQty"] != "":
+                        exec_details.append((res["avgPrice"], res["cumExecQty"]))
+                    break
+                elif res["orderStatus"] in [
+                    "Cancelled",
+                    "Rejected",
+                    "PartiallyFilled",
+                    "New",
+                ]:
+                    if isClose:
+                        continue
+                    pricediff = abs(self.get_latest_price(symbol) - limit_price)
+                    if (
+                        pricediff > (self.spread * self.ticksize[symbol])
+                        and time.time() - orderTime > self.sleep
+                    ):
+                        logger.info(f"Price diff: {pricediff}, Replacing order")
+                        replace_order = True
+                        break
+            if replace_order:
+                # Cancel old order
+                self.client.cancel_order(
+                    category="linear", symbol=symbol, orderId=orderId
+                )
+                # query and add pricediff
+                res = self.client.get_open_orders(
+                    category="linear", symbol=symbol, orderId=orderId
+                )
+                res = res["result"]["list"][0]
+                if res["avgPrice"] != "" and res["cumExecQty"] != "":
+                    exec_details.append((res["avgPrice"], res["cumExecQty"]))
+                # Update params and Try again
+                qty = float(qty) - float(res["cumExecQty"])
+                continue
+            else:
                 break
-            time.sleep(60)
-            numTries += 1
-        if result != "" and result["orderStatus"] == "PartiallyFilled":
-            self.userdb.insert_command(
-                {
-                    "cmd": "send_message",
-                    "chat_id": self.chat_id,
-                    "message": f"Order ID {orderId} ({positionKey}) is only partially filled. The rest will be cancelled.",
-                }
-            )
-            try:
-                self.client.cancel_order(
-                    category="linear", symbol=symbol, order_id=orderId
-                )
-            except:
-                pass
 
-        if result != "" and result["order_status"] == "New":
-            self.userdb.insert_command(
-                {
-                    "cmd": "send_message",
-                    "chat_id": self.chat_id,
-                    "message": f"Order ID {orderId} ({positionKey}) has not been filled. It will be cancelled.",
-                }
-            )
-            try:
-                self.client.cancel_order(
-                    category="linear", symbol=symbol, order_id=orderId
-                )
-            except:
-                pass
+        # Update slippage
+        total_qty = sum([float(x[1]) for x in exec_details])
+        total_paid = sum([float(x[0]) * float(x[1]) for x in exec_details])
+        exec_price = total_paid / total_qty
+        slippage = (exec_price - ref_price) / ref_price * 100
+        self.userdb.insert_command(
+            {
+                "cmd": "send_message",
+                "type": "telegram",
+                "chat_id": self.chat_id,
+                "message": f"{self.uname}: Order ID {orderId} ({positionKey}) fulfilled successfully. The slippage is {slippage:.2f}%.",
+            }
+        )
+        # Query and update position
+        resultqty = total_qty
+        resultqty = resultqty if positionKey[-4:].upper() == "LONG" else -resultqty
+        if not isClose:
+            self.userdb.update_positions(self.chat_id, uid, positionKey, resultqty, 1)
+        else:
+            self.userdb.update_positions(self.chat_id, uid, positionKey, resultqty, 2)
+        return
 
     def check_uta(self):
         try:
@@ -223,7 +253,7 @@ class BybitClient:
                     res = self.client.get_wallet_balance(accountType="UNIFIED")[
                         "result"
                     ]["list"][0]
-                    balance = res["totalAvailableBalance"]
+                    balance = res["totalEquity"]
                 else:
                     res = self.client.get_wallet_balance(
                         accountType="CONTRACT", coin=coin
@@ -300,14 +330,24 @@ class BybitClient:
                     }
                 )
                 continue
-            reqticksize = self.ticksize[tradeinfo[1]]
             reqstepsize = self.stepsize[tradeinfo[1]]
             if not isOpen and tradeinfo[4]:
                 if abs(positions[checkKey]) > abs(quant):
                     quant = abs(positions[checkKey])
+            else:
+                quant = max(quant, 5 / latest_price)
             collateral = (latest_price * quant) / leverage[tradeinfo[1]]
-            quant = self.round_up(quant, reqstepsize)
-            quant = str(quant)
+            newquant = self.round_up(quant, reqstepsize)
+            # if (newquant - quant) / quant > 1:
+            #     self.userdb.insert_command(
+            #         {
+            #             "cmd": "send_message",
+            #             "chat_id": self.chat_id,
+            #             "message": f"{side} {checkKey}: This trade will not be executed because the quantity is too small. Adjust proportion if you want to follow.",
+            #         }
+            #     )
+            #     continue
+            quant = str(newquant)
             if isOpen:
                 self.userdb.insert_command(
                     {
@@ -325,91 +365,49 @@ class BybitClient:
                         }
                     )
                     continue
-            if True:
-                try:
-                    tosend = f"Trying to execute the following trade:\nSymbol: {tradeinfo[1]}\nSide: {side}\npositionSide: {positionSide}\ntype: MARKET\nquantity: {quant}"
-                    self.userdb.insert_command(
-                        {
-                            "cmd": "send_message",
-                            "chat_id": self.chat_id,
-                            "message": tosend,
-                        }
-                    )
-                    if isOpen:
-                        response = self.client.place_order(
-                            category="linear",
-                            side=side,
-                            symbol=tradeinfo[1],
-                            order_type="Market",
-                            qty=quant,
-                            positionIdx=self.globals.getIdx(side, isOpen),
-                            reduce_only=False,
-                            close_on_trigger=False,
-                        )
-                    else:
-                        response = self.client.place_order(
-                            category="linear",
-                            side=side,
-                            symbol=tradeinfo[1],
-                            order_type="Market",
-                            qty=quant,
-                            positionIdx=self.globals.getIdx(side, isOpen),
-                            reduce_only=True,
-                            close_on_trigger=True,
-                        )
-                    if response["retMsg"] == "OK":
-                        logger.info(f"{self.uname} opened order.")
-                    else:
-                        logger.error(f"Error: {response['retMsg']}")
-                        self.userdb.insert_command(
-                            {
-                                "cmd": "send_message",
-                                "chat_id": self.chat_id,
-                                "message": f"Error: {response['retMsg']}",
-                            }
-                        )
-                        retmsg = response["retMsg"]
-                        if retmsg.find("reduce-only") != -1:
-                            self.userdb.update_positions(
-                                self.chat_id, uid, checkKey, 0, 0
-                            )
-                        continue
-                    t1 = threading.Thread(
-                        target=self.query_trade,
-                        args=(
-                            response["result"]["orderId"],
-                            tradeinfo[1],
-                            checkKey,
-                            isOpen,
-                            self.uname,
-                            -1,
-                            -1,
-                            leverage[tradeinfo[1]],
-                            positionSide,
-                            -1,
-                            uid,
-                            todelete,
-                        ),
-                    )
-                    t1.start()
-                except Exception as e:
-                    logger.error(str(e))
-                    if str(e).find("reduce-only") != -1:
-                        self.userdb.update_positions(self.chat_id, uid, checkKey, 0, 0)
-                        self.userdb.insert_command(
-                            {
-                                "cmd": "send_message",
-                                "chat_id": self.chat_id,
-                                "message": "Your opened position is 0, no positions has been closed.",
-                            }
-                        )
-                    logger.error(
-                        f"Error in processing request during trade opening. {e}"
-                    )
+            ref_price = float(tradeinfo[3])
+            try:
+                t = threading.Thread(
+                    target=self.algolimit,
+                    args=(
+                        tradeinfo[1],
+                        quant,
+                        side,
+                        self.globals.getIdx(side, isOpen),
+                        not isOpen,
+                        ref_price,
+                        checkKey,
+                        uid,
+                    ),
+                )
+                t.start()
+            except Exception as e:
+                logger.error(f"Error in processing request during trade opening. {e}")
+        time.sleep(random.choice([0.1 * i for i in range(1, 10)]))
 
     def get_positions(self):
         try:
-            result2 = self.client.my_position()["result"]
+            havenext = True
+            npc = None
+            allpos = []
+            while havenext:
+                havenext = False
+                try:
+                    if npc is None:
+                        result2 = self.client.get_positions(
+                            category="linear", settleCoin="USDT"
+                        )["result"]
+                    else:
+                        result2 = self.client.get_positions(
+                            category="linear", settleCoin="USDT", cursor=npc
+                        )["result"]
+                    allpos.extend(result2["list"])
+                except:
+                    logger.error("Other errors")
+                    return -1
+                if "nextPageCursor" in result2 and result2["nextPageCursor"] != "":
+                    npc = result2["nextPageCursor"]
+                    havenext = True
         except Exception as e:
             if str(e).find("Invalid") != -1:
                 logger.error(str(e))
@@ -428,12 +426,10 @@ class BybitClient:
         MarkPrice = []
         PNL = []
         margin = []
-        if result2 is None:
-            return -1
         # if self.time_in_danger():
         #     logger.info("Skipping checking during unstable time.")
         #     continue
-        for pos in result2:
+        for pos in allpos:
             try:
                 pos = pos["data"]
             except:

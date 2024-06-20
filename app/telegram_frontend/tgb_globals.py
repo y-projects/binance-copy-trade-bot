@@ -62,20 +62,38 @@ class tgGlobals:
         while not stopcond.is_set():
             time.sleep(1)
             msgs = db.getall("commandtable")
+            recent_msg = []
             for msg in msgs:
+                time.sleep(0.9)
                 todelete = []
                 if msg["cmd"] == "send_message":
+                    # delete_flag = False
+                    # for m in recent_msg:
+                    #     if Levenshtein.ratio(m, msg["message"]) > 0.8:
+                    #         logger.info(f"message deleted.")
+                    #         todelete.append(msg["_id"])
+                    #         db.delete_command(todelete)
+                    #         delete_flag = True
+                    #         break
+                    # if delete_flag:
+                    #     continue
                     try:
                         for i in range(len(msg["message"]) // 500 + 1):
-                            time.sleep(0.1)
+                            time.sleep(0.7)
                             sendmsg = msg["message"][500 * i : 500 * (i + 1)]
                             if (
                                 int(msg["chat_id"]) > 20
                                 and re.sub(r"[^a-zA-Z0-9]+", "", sendmsg) != ""
                             ):
                                 self.updater.bot.sendMessage(msg["chat_id"], sendmsg)
+                                time.sleep(0.1)
+                            elif int(msg["chat_id"]) < 20:
+                                logger.info(
+                                    f"Master Trader {msg['chat_id']}: {sendmsg}"
+                                )
                         todelete.append(msg["_id"])
                         db.delete_command(todelete)
+                        recent_msg.append(msg["message"])
                     except Exception as e:
                         logger.error(f"Connection Error: {str(e)}")
 

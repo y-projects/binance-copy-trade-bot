@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 import pandas as pd
 from datetime import datetime, timedelta
 import requests
+import random
 
 
 class WebScraping(threading.Thread):
@@ -335,7 +336,7 @@ class WebScraping(threading.Thread):
                                 break
                             except Exception as e:
                                 retries += 1
-                                logger.error(str(e))
+                                logger.error(f"Error in trade opening {e}")
                 self.userdb.save_position(uid, "x", True)
             elif self.num_no_data[uid] >= 3:
                 self.userdb.save_position(uid, "x", False)
@@ -365,7 +366,7 @@ class WebScraping(threading.Thread):
                     toComp = output["data"][["symbol", "size", "Entry Price"]]
                     prevdf = prev_position[["symbol", "size", "Entry Price"]]
                 except Exception as e:
-                    logger.error(str(e))
+                    logger.error(f"Error in position reading {e}")
                 if not toComp.equals(prevdf):
                     txlist = self.changes(prev_position, output["data"])
                     if not txlist.empty:
@@ -379,16 +380,17 @@ class WebScraping(threading.Thread):
                 now = datetime.now() + timedelta(hours=8)
                 self.lastPosTime = datetime.now() + timedelta(hours=8)
                 numrows = output["data"].shape[0]
-                if numrows <= 10:
-                    tosend = (
-                        f"Trader {name}, Current time: "
-                        + str(now)
-                        + "\n"
-                        + output["time"]
-                        + "\n"
-                        + output["data"].to_string()
-                        + "\n"
-                    )
+                if True:  # numrows <= 10:
+                    tosend = f"Trader {name}, changed position at {now}"
+                    # tosend = (
+                    #     f"Trader {name}, Current time: "
+                    #     + str(now)
+                    #     + "\n"
+                    #     + output["time"]
+                    #     + "\n"
+                    #     + output["data"].to_string()
+                    #     + "\n"
+                    # )
                     for users in following_users:
                         self.userdb.insert_command(
                             {
@@ -397,38 +399,38 @@ class WebScraping(threading.Thread):
                                 "message": tosend,
                             }
                         )
-                else:
-                    firstdf = output["data"].iloc[0:10]
-                    tosend = (
-                        f"Trader {name}, Current time: "
-                        + str(now)
-                        + "\n"
-                        + output["time"]
-                        + "\n"
-                        + firstdf.to_string()
-                        + "\n(cont...)"
-                    )
-                    for users in following_users:
-                        self.userdb.insert_command(
-                            {
-                                "cmd": "send_message",
-                                "chat_id": users["chat_id"],
-                                "message": tosend,
-                            }
-                        )
-                    for i in range(numrows // 10):
-                        seconddf = output["data"].iloc[
-                            (i + 1) * 10 : min(numrows, (i + 2) * 10)
-                        ]
-                        if not seconddf.empty:
-                            for users in following_users:
-                                self.userdb.insert_command(
-                                    {
-                                        "cmd": "send_message",
-                                        "chat_id": users["chat_id"],
-                                        "message": seconddf.to_string(),
-                                    }
-                                )
+                # else:
+                #     firstdf = output["data"].iloc[0:10]
+                #     tosend = (
+                #         f"Trader {name}, Current time: "
+                #         + str(now)
+                #         + "\n"
+                #         + output["time"]
+                #         + "\n"
+                #         + firstdf.to_string()
+                #         + "\n(cont...)"
+                #     )
+                #     for users in following_users:
+                #         self.userdb.insert_command(
+                #             {
+                #                 "cmd": "send_message",
+                #                 "chat_id": users["chat_id"],
+                #                 "message": tosend,
+                #             }
+                #         )
+                #     for i in range(numrows // 10):
+                #         seconddf = output["data"].iloc[
+                #             (i + 1) * 10 : min(numrows, (i + 2) * 10)
+                #         ]
+                #         if not seconddf.empty:
+                #             for users in following_users:
+                #                 self.userdb.insert_command(
+                #                     {
+                #                         "cmd": "send_message",
+                #                         "chat_id": users["chat_id"],
+                #                         "message": seconddf.to_string(),
+                #                     }
+                #                 )
                 # txlist = self.changes(prev_position, output["data"])
                 self.userdb.insert_command2(
                     {
@@ -495,11 +497,13 @@ class WebScraping(threading.Thread):
     def get_cookie(self):
         cookies = self.userdb.get_cookies()
         if len(cookies) == 0:
-            return None, None, None
-        cookie_str, token, _id = (
-            cookies[0]["cookie"],
-            cookies[0]["csrftoken"],
-            cookies[0]["_id"],
+            return None, None, None, None
+        chosen_cookie = random.choice(cookies)
+        cookie_str, token, label, _id = (
+            chosen_cookie["cookie"],
+            chosen_cookie["csrftoken"],
+            chosen_cookie["label"],
+            chosen_cookie["_id"],
         )
         try:
             cookie_str = cookie_str.split(";")
@@ -510,8 +514,8 @@ class WebScraping(threading.Thread):
         except Exception as e:
             logger.error(f"Wrong cookie format, deleting: {e}")
             self.userdb.remove_cookie(_id)
-            return None, None, None
-        return cookies, token, _id
+            return None, None, None, None
+        return cookies, token, label, _id
 
     def run(self):
         while not self.isStop.is_set():
@@ -523,8 +527,8 @@ class WebScraping(threading.Thread):
                 # logger.info(f"Running {uid['name']}.")
                 try:
                     while True:
-                        time.sleep(0.01)
-                        cookies, token, _id = self.get_cookie()
+                        time.sleep(1)  # change to 1s
+                        cookies, token, label, _id = self.get_cookie()
                         headers["Csrftoken"] = token
                         assert cookies is not None, "Out of correct cookie."
                         r = requests.post(
@@ -534,8 +538,14 @@ class WebScraping(threading.Thread):
                             headers=headers,
                         )
                         if r.json()["success"] == False or r.status_code != 200:
+                            if "too many" in r.json()["message"]:
+                                time.sleep(2)
+                                continue
                             logger.info(
                                 f"Login credential may have expired, deleting cookie: {r.json()['message']}"
+                            )
+                            self.globals.send_discord_reminder(
+                                f"Cookie label {label} expired."
                             )
                             self.userdb.remove_cookie(_id)
                             continue

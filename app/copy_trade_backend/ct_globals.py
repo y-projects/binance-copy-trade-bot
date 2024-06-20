@@ -41,7 +41,7 @@ class ctGlobal:
                 sent += 1
                 if sent == 1:
                     self.send_discord_reminder("Out of usable credentials for api!!!")
-                sent = sent % 300
+                sent = sent % 3000
                 continue
             sent = 0
 

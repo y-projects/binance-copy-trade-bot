@@ -382,17 +382,26 @@ class tgHandlers:
         return name
 
     def start(self, update: Update, context: CallbackContext) -> int:
-        if self.dbobject.check_presence(update.message.chat_id):
+        # if self.dbobject.check_presence(update.message.chat_id):
+        #     update.message.reply_text(
+        #         "You have already initalized! Please use other commands, or use /end to end current session before initializing another."
+        #     )
+        #     return ConversationHandler.END
+        logger.info(f"{update.message.from_user.username} is registering.")
+        allowed_users = self.dbobject.find_allowed_user(
+            update.message.from_user.username
+        )
+        if allowed_users is None:
             update.message.reply_text(
-                "You have already initalized! Please use other commands, or use /end to end current session before initializing another."
+                "Sorry! You are not white-listed to use this bot."
             )
             return ConversationHandler.END
         update.message.reply_text(
-            f"*Welcome {update.message.from_user.first_name}!* Before you start, please type in the access code (6 digits).",
+            f'*Welcome {update.message.from_user.first_name}!* Before you start, please confirm that you agree to the disclaimer (type "yes" in lowercase).',
             parse_mode=telegram.ParseMode.MARKDOWN,
         )
         context.user_data["uname"] = update.message.from_user.first_name
-        return AUTH
+        return DISCLAIMER
 
     def auth_check(self, update: Update, context: CallbackContext) -> int:
         user = update.message.from_user
@@ -443,6 +452,18 @@ class tgHandlers:
         if not update.message.text.isalnum():
             update.message.reply_text("Your secret key is invalid, please enter again.")
             return APISECRET
+        uid = self.dbobject.get_uid(
+            context.user_data["api_key"], context.user_data["api_secret"]
+        )
+        user = self.dbobject.find_allowed_user(
+            update.message.from_user.username, str(uid)
+        )
+        logger.info(f"Check uid {uid}")
+        # if user is None:
+        #     update.message.reply_text(
+        #         "The API you use has not been whitelisted to use the bot. Sorry! Please contact the admin."
+        #     )
+        #     return ConversationHandler.END
         update.message.reply_text(
             "Now, please provide the UID of the trader you want to follow. (can be found in the trader's URL)"
         )
@@ -678,7 +699,7 @@ class tgHandlers:
             mark_price = float(row["Mark Price"])
             symbol = row["symbol"]
             if symbol[-4:] == "USDT":
-                total += size * mark_price
+                total += abs(size * mark_price)
         return round(total, 4)
         # Rest of your code here
 

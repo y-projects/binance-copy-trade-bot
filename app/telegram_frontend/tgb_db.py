@@ -20,7 +20,25 @@ class dbOperations:
         self.tradertable = self.db["Traders"]
         self.notitable = self.db["Notifications"]
         self.cookietable = self.db["Cookies"]
+        self.allowedTraders = self.db["allowedTraders"]
+        self.allowedUsers = self.db["allowedUsers"]
         self.updater = udt
+
+    def get_uid(self, api_key, api_secret):
+        try:
+            client = HTTP(testnet=False, api_key=api_key, api_secret=api_secret)
+            res = client.get_api_key_information()
+            return res["result"]["userID"]
+        except Exception as e:
+            logger.error(f"Get UID {e}")
+        return None
+
+    def find_allowed_user(self, name, uid=None):
+        if uid is None:
+            myquery = {"user": name}
+        else:
+            myquery = {"user": name, "uid": uid}
+        return self.allowedUsers.find_one(myquery)
 
     def get_cookies(self):
         data = []
@@ -243,9 +261,27 @@ class dbOperations:
                 api_key=result["api_key"],
                 api_secret=result["api_secret"],
             )
-            result = client.get_positions(category="linear", settleCoin="USDT")[
-                "result"
-            ]
+            havenext = True
+            npc = None
+            allpos = []
+            while havenext:
+                havenext = False
+                try:
+                    if npc is None:
+                        result2 = client.get_positions(
+                            category="linear", settleCoin="USDT"
+                        )["result"]
+                    else:
+                        result2 = client.get_positions(
+                            category="linear", settleCoin="USDT", cursor=npc
+                        )["result"]
+                    allpos.extend(result2["list"])
+                except Exception as e:
+                    logger.error(f"Other errors {e}")
+                    return -1
+                if "nextPageCursor" in result2 and result2["nextPageCursor"] != "":
+                    npc = result2["nextPageCursor"]
+                    havenext = True
         except:
             logger.error("Other errors")
         try:
@@ -255,7 +291,7 @@ class dbOperations:
             MarkPrice = []
             PNL = []
             margin = []
-            for pos in result["list"]:
+            for pos in allpos:
                 if float(pos["size"]) != 0:
                     try:
                         mp = client.get_mark_price_kline(
@@ -265,7 +301,7 @@ class dbOperations:
                         mp = pos["avgPrice"]
                     symbol.append(pos["symbol"])
                     tsize = pos["size"]
-                    tsize = tsize if pos["side"] == "Buy" else -tsize
+                    tsize = float(tsize) if pos["side"] == "Buy" else -float(tsize)
                     size.append(tsize)
                     EnPrice.append(pos["avgPrice"])
                     MarkPrice.append(mp)
